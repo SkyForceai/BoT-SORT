@@ -114,8 +114,6 @@ class STrack(BaseTrack):
 
         self.tracklet_len = 0
         self.state = TrackState.Tracked
-        if frame_id == 1:
-            self.is_activated = True
         self.frame_id = frame_id
         self.start_frame = frame_id
 
@@ -271,7 +269,7 @@ class BoTSORT(object):
             bboxes = bboxes[lowest_inds]
             scores = scores[lowest_inds]
             classes = classes[lowest_inds]
-            features = output_results[lowest_inds]
+            features = features[lowest_inds]
 
             # Find high threshold detections
             remain_inds = scores > self.args.track_high_thresh
@@ -435,7 +433,7 @@ class BoTSORT(object):
         self.lost_stracks = sub_stracks(self.lost_stracks, self.tracked_stracks)
         self.lost_stracks.extend(lost_stracks)
         self.lost_stracks = sub_stracks(self.lost_stracks, self.removed_stracks)
-        self.removed_stracks.extend(removed_stracks)
+        self.removed_stracks.extend(removed_stracks) # fix, otherwise it will grow indefinitely
         self.tracked_stracks, self.lost_stracks = remove_duplicate_stracks(self.tracked_stracks, self.lost_stracks)
 
         # output_stracks = [track for track in self.tracked_stracks if track.is_activated]

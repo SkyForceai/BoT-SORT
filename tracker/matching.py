@@ -61,9 +61,16 @@ def ious(atlbrs, btlbrs):
     if ious.size == 0:
         return ious
 
+    atlbrs = np.ascontiguousarray(atlbrs, dtype=np.float64)
+    btlbrs = np.ascontiguousarray(btlbrs, dtype=np.float64)
+
+    # convert to cython_bbox.bbox_overlaps bbox format
+    atlbrs[:, 2:] -= 1
+    btlbrs[:, 2:] -= 1
+
     ious = bbox_ious(
-        np.ascontiguousarray(atlbrs, dtype=np.float64),
-        np.ascontiguousarray(btlbrs, dtype=np.float64)
+        atlbrs,
+        btlbrs
     )
 
     return ious

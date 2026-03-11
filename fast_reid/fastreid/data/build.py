@@ -8,7 +8,7 @@ import logging
 import os
 
 import torch
-from torch._six import string_classes
+string_classes = (str,) # torch._six was removed in PyTorch 2.0+.  We need to use the string_classes tuple instead.
 from collections.abc import Mapping
 
 from fast_reid.fastreid.config import configurable

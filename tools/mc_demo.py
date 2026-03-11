@@ -17,6 +17,8 @@ from yolox.utils.visualize import plot_tracking
 
 from tracker.mc_bot_sort import BoTSORT
 from tracker.tracking_utils.timer import Timer
+from dfine.utils.csv_export import CSVExporter
+from dfine.utils.run_info import save_run_info
 
 
 IMAGE_EXT = [".jpg", ".jpeg", ".webp", ".bmp", ".png"]
@@ -40,6 +42,24 @@ def make_parser():
     parser.add_argument("--fp16", dest="fp16", default=False, action="store_true",help="Adopting mix precision evaluating.")
     parser.add_argument("--fuse", dest="fuse", default=False, action="store_true", help="Fuse conv and bn for testing.")
     parser.add_argument("--trt", dest="trt", default=False, action="store_true", help="Using TensorRT model for testing.")
+
+    # D-FINE detector
+    parser.add_argument("--detector", default="yolox", type=str, choices=["yolox", "dfine"],
+                        help="detector backend: yolox (default) | dfine")
+    parser.add_argument("--dfine-backend", dest="dfine_backend", default="onnx", type=str,
+                        choices=["onnx", "trt", "pytorch"], help="D-FINE inference backend")
+    parser.add_argument("--dfine-model", dest="dfine_model", default=None, type=str,
+                        help="path to D-FINE .onnx / .engine / .pth")
+    parser.add_argument("--dfine-config", dest="dfine_config", default=None, type=str,
+                        help="D-FINE YAML config (pytorch backend)")
+    parser.add_argument("--tcb-path", dest="tcb_path", default=None, type=str,
+                        help="path to TCB repo (pytorch backend)")
+    parser.add_argument("--target-size", dest="target_size", nargs=2, type=int,
+                        default=[720, 1280], metavar=("H", "W"), help="D-FINE letterbox size")
+    parser.add_argument("--num-classes", dest="num_classes", type=int, default=80,
+                        help="number of detection classes (D-FINE)")
+    parser.add_argument("--no-ema", dest="no_ema", default=False, action="store_true",
+                        help="use model weights instead of EMA (D-FINE pytorch)")
 
     # tracking args
     parser.add_argument("--track_high_thresh", type=float, default=0.6, help="tracking confidence threshold")
@@ -156,20 +176,32 @@ def image_demo(predictor, vis_folder, current_time, args):
     timer = Timer()
     results = []
 
+    timestamp = time.strftime("%Y_%m_%d_%H_%M_%S", current_time)
+    save_folder = osp.join(vis_folder, timestamp)
+    os.makedirs(save_folder, exist_ok=True)
+    save_run_info(save_folder, args)
+    csv_exporter = CSVExporter(save_folder)
+
     for frame_id, img_path in enumerate(files, 1):
 
         # Detect objects
-        outputs, img_info = predictor.inference(img_path, timer)
-        scale = min(exp.test_size[0] / float(img_info['height'], ), exp.test_size[1] / float(img_info['width']))
+        if args.detector == "dfine":
+            detections, img_info = predictor.inference(img_path, timer)
+        else:
+            outputs, img_info = predictor.inference(img_path, timer)
+            scale = min(exp.test_size[0] / float(img_info['height'], ), exp.test_size[1] / float(img_info['width']))
+            detections = []
+            if outputs[0] is not None:
+                outputs = outputs[0].cpu().numpy()
+                detections = outputs[:, :7]
+                detections[:, :4] /= scale
 
-        detections = []
-        if outputs[0] is not None:
-            outputs = outputs[0].cpu().numpy()
-            detections = outputs[:, :7]
-            detections[:, :4] /= scale
+        csv_exporter.add_detections(frame_id, detections)
 
         # Run tracker
         online_targets = tracker.update(detections, img_info['raw_img'])
+
+        csv_exporter.add_tracks(frame_id, online_targets)
 
         online_tlwhs = []
         online_ids = []
@@ -198,9 +230,6 @@ def image_demo(predictor, vis_folder, current_time, args):
 
         # result_image = predictor.visual(outputs[0], img_info, predictor.confthre)
         if args.save_result:
-            timestamp = time.strftime("%Y_%m_%d_%H_%M_%S", current_time)
-            save_folder = osp.join(vis_folder, timestamp)
-            os.makedirs(save_folder, exist_ok=True)
             cv2.imwrite(osp.join(save_folder, osp.basename(img_path)), online_im)
 
         if frame_id % 20 == 0:
@@ -210,6 +239,7 @@ def image_demo(predictor, vis_folder, current_time, args):
         if ch == 27 or ch == ord("q") or ch == ord("Q"):
             break
 
+    csv_exporter.save()
     if args.save_result:
         res_file = osp.join(vis_folder, f"{timestamp}.txt")
         with open(res_file, 'w') as f:
@@ -225,8 +255,10 @@ def imageflow_demo(predictor, vis_folder, current_time, args):
     timestamp = time.strftime("%Y_%m_%d_%H_%M_%S", current_time)
     save_folder = osp.join(vis_folder, timestamp)
     os.makedirs(save_folder, exist_ok=True)
+    save_run_info(save_folder, args)
     if args.demo == "video":
-        save_path = osp.join(save_folder, args.path.split("/")[-1])
+        stem = osp.splitext(osp.basename(args.path))[0]
+        save_path = osp.join(save_folder, stem + ".mp4")
     else:
         save_path = osp.join(save_folder, "camera.mp4")
     logger.info(f"video save_path is {save_path}")
@@ -237,23 +269,30 @@ def imageflow_demo(predictor, vis_folder, current_time, args):
     timer = Timer()
     frame_id = 0
     results = []
+    csv_exporter = CSVExporter(save_folder)
     while True:
         if frame_id % 20 == 0:
             logger.info('Processing frame {} ({:.2f} fps)'.format(frame_id, 1. / max(1e-5, timer.average_time)))
         ret_val, frame = cap.read()
         if ret_val:
             # Detect objects
-            outputs, img_info = predictor.inference(frame, timer)
-            scale = min(exp.test_size[0] / float(img_info['height'], ), exp.test_size[1] / float(img_info['width']))
+            if args.detector == "dfine":
+                detections, img_info = predictor.inference(frame, timer)
+            else:
+                outputs, img_info = predictor.inference(frame, timer)
+                scale = min(exp.test_size[0] / float(img_info['height'], ), exp.test_size[1] / float(img_info['width']))
+                detections = []
+                if outputs[0] is not None:
+                    outputs = outputs[0].cpu().numpy()
+                    detections = outputs[:, :7]
+                    detections[:, :4] /= scale
 
-            detections = []
-            if outputs[0] is not None:
-                outputs = outputs[0].cpu().numpy()
-                detections = outputs[:, :7]
-                detections[:, :4] /= scale
+            csv_exporter.add_detections(frame_id + 1, detections)
 
             # Run tracker
             online_targets = tracker.update(detections, img_info["raw_img"])
+
+            csv_exporter.add_tracks(frame_id + 1, online_targets)
 
             online_tlwhs = []
             online_ids = []
@@ -284,6 +323,7 @@ def imageflow_demo(predictor, vis_folder, current_time, args):
             break
         frame_id += 1
 
+    csv_exporter.save()
     if args.save_result:
         res_file = osp.join(vis_folder, f"{timestamp}.txt")
         with open(res_file, 'w') as f:
@@ -292,65 +332,100 @@ def imageflow_demo(predictor, vis_folder, current_time, args):
 
 
 def main(exp, args):
-    if not args.experiment_name:
-        args.experiment_name = exp.exp_name
+    if args.detector == "dfine":
+        # ---------- D-FINE path ----------
+        from dfine.detector import DFINEDetector
+        from dfine.predictor import DFINEPredictor
 
-    output_dir = osp.join(exp.output_dir, args.experiment_name)
-    os.makedirs(output_dir, exist_ok=True)
+        experiment_name = args.experiment_name or "dfine_demo"
+        output_dir = osp.join("outputs", experiment_name)
+        os.makedirs(output_dir, exist_ok=True)
 
-    if args.save_result:
         vis_folder = osp.join(output_dir, "track_vis")
-        os.makedirs(vis_folder, exist_ok=True)
+        if args.save_result:
+            os.makedirs(vis_folder, exist_ok=True)
 
-    if args.trt:
-        args.device = "gpu"
-    args.device = torch.device("cuda" if args.device == "gpu" else "cpu")
+        if args.trt:
+            args.device = "gpu"
+        args.device = torch.device("cuda" if args.device == "gpu" else "cpu")
 
-    logger.info("Args: {}".format(args))
+        logger.info("Args: {}".format(args))
 
-    if args.conf is not None:
-        exp.test_conf = args.conf
-    if args.nms is not None:
-        exp.nmsthre = args.nms
-    if args.tsize is not None:
-        exp.test_size = (args.tsize, args.tsize)
-
-    model = exp.get_model().to(args.device)
-    logger.info("Model Summary: {}".format(get_model_info(model, exp.test_size)))
-    model.eval()
-
-    if not args.trt:
-        if args.ckpt is None:
-            ckpt_file = osp.join(output_dir, "best_ckpt.pth.tar")
-        else:
-            ckpt_file = args.ckpt
-        logger.info("loading checkpoint")
-        ckpt = torch.load(ckpt_file, map_location="cpu")
-        # load the model state dict
-        model.load_state_dict(ckpt["model"])
-        logger.info("loaded checkpoint done.")
-
-    if args.fuse:
-        logger.info("\tFusing model...")
-        model = fuse_model(model)
-
-    if args.fp16:
-        model = model.half()  # to FP16
-
-    if args.trt:
-        assert not args.fuse, "TensorRT model is not support model fusing!"
-        trt_file = osp.join(output_dir, "model_trt.pth")
-        assert osp.exists(
-            trt_file
-        ), "TensorRT model is not found!\n Run python3 tools/trt.py first!"
-        model.head.decode_in_inference = False
-        decoder = model.head.decode_outputs
-        logger.info("Using TensorRT to inference")
+        conf_threshold = args.conf if args.conf is not None else 0.3
+        detector = DFINEDetector(
+            backend         = args.dfine_backend,
+            model_path      = args.dfine_model,
+            config_path     = args.dfine_config,
+            target_size     = tuple(args.target_size),
+            num_classes     = args.num_classes,
+            conf_threshold  = conf_threshold,
+            num_top_queries = 300,
+            device          = str(args.device),
+            fp16            = args.fp16,
+            use_ema         = not args.no_ema,
+            tcb_path        = args.tcb_path,
+        )
+        predictor = DFINEPredictor(detector)
     else:
-        trt_file = None
-        decoder = None
+        # ---------- YOLOX path (original) ----------
+        if not args.experiment_name:
+            args.experiment_name = exp.exp_name
 
-    predictor = Predictor(model, exp, trt_file, decoder, args.device, args.fp16)
+        output_dir = osp.join(exp.output_dir, args.experiment_name)
+        os.makedirs(output_dir, exist_ok=True)
+
+        vis_folder = osp.join(output_dir, "track_vis")
+        if args.save_result:
+            os.makedirs(vis_folder, exist_ok=True)
+
+        if args.trt:
+            args.device = "gpu"
+        args.device = torch.device("cuda" if args.device == "gpu" else "cpu")
+
+        logger.info("Args: {}".format(args))
+
+        if args.conf is not None:
+            exp.test_conf = args.conf
+        if args.nms is not None:
+            exp.nmsthre = args.nms
+        if args.tsize is not None:
+            exp.test_size = (args.tsize, args.tsize)
+
+        model = exp.get_model().to(args.device)
+        logger.info("Model Summary: {}".format(get_model_info(model, exp.test_size)))
+        model.eval()
+
+        if not args.trt:
+            if args.ckpt is None:
+                ckpt_file = osp.join(output_dir, "best_ckpt.pth.tar")
+            else:
+                ckpt_file = args.ckpt
+            logger.info("loading checkpoint")
+            ckpt = torch.load(ckpt_file, map_location="cpu")
+            model.load_state_dict(ckpt["model"])
+            logger.info("loaded checkpoint done.")
+
+        if args.fuse:
+            logger.info("\tFusing model...")
+            model = fuse_model(model)
+
+        if args.fp16:
+            model = model.half()
+
+        if args.trt:
+            assert not args.fuse, "TensorRT model is not support model fusing!"
+            trt_file = osp.join(output_dir, "model_trt.pth")
+            assert osp.exists(trt_file), \
+                "TensorRT model is not found!\n Run python3 tools/trt.py first!"
+            model.head.decode_in_inference = False
+            decoder = model.head.decode_outputs
+            logger.info("Using TensorRT to inference")
+        else:
+            trt_file = None
+            decoder = None
+
+        predictor = Predictor(model, exp, trt_file, decoder, args.device, args.fp16)
+
     current_time = time.localtime()
     if args.demo == "image" or args.demo == "images":
         image_demo(predictor, vis_folder, current_time, args)
@@ -362,9 +437,13 @@ def main(exp, args):
 
 if __name__ == "__main__":
     args = make_parser().parse_args()
-    exp = get_exp(args.exp_file, args.name)
 
     args.ablation = False
     args.mot20 = not args.fuse_score
 
-    main(exp, args)
+    if args.detector == "dfine":
+        exp = None
+        main(exp, args)
+    else:
+        exp = get_exp(args.exp_file, args.name)
+        main(exp, args)

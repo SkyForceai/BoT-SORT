@@ -12,12 +12,12 @@ import logging
 import time
 import types
 from pathlib import Path
-from typing import Dict, Iterator, Tuple
+from typing import Dict
 
-import cv2
 import numpy as np
 import yaml
 
+from data import iter_frames
 from detectors import build_detector
 from recorder import RunRecorder
 from reid import build_reid
@@ -25,11 +25,9 @@ from tracker.mc_bot_sort import BoTSORT
 
 logger = logging.getLogger(__name__)
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-
 
 # ------------------------------------------------------------------
-# Config / data helpers
+# Config helpers
 # ------------------------------------------------------------------
 
 def load_config(path: str) -> Dict:
@@ -53,62 +51,6 @@ def make_tracker_args(tracker_cfg: Dict, reid_enabled: bool) -> types.SimpleName
         appearance_thresh=tracker_cfg.get("appearance_thresh", 0.25),
         with_reid=reid_enabled,
     )
-
-
-def iter_frames(data_cfg: Dict) -> Iterator[Tuple[int, np.ndarray]]:
-    """Yield ``(frame_id, bgr_frame)`` from a video file or image directory."""
-    source_type = data_cfg["source_type"]
-    path = Path(data_cfg["path"])
-
-    if source_type == "video":
-        yield from _iter_video(path)
-    elif source_type == "image_dir":
-        yield from _iter_image_dir(path)
-    else:
-        raise ValueError(f"Unknown source_type '{source_type}'. Use 'video' or 'image_dir'.")
-
-
-def _iter_video(video_path: Path) -> Iterator[Tuple[int, np.ndarray]]:
-    if not video_path.exists():
-        raise FileNotFoundError(f"Video not found: {video_path}")
-
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"Failed to open video: {video_path}")
-
-    frame_id = 0
-    try:
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            frame_id += 1
-            yield frame_id, frame
-    finally:
-        cap.release()
-
-    logger.info("Video exhausted after %d frames", frame_id)
-
-
-def _iter_image_dir(dir_path: Path) -> Iterator[Tuple[int, np.ndarray]]:
-    if not dir_path.is_dir():
-        raise FileNotFoundError(f"Image directory not found: {dir_path}")
-
-    image_files = sorted(
-        p for p in dir_path.iterdir()
-        if p.suffix.lower() in IMAGE_EXTENSIONS
-    )
-    if not image_files:
-        raise FileNotFoundError(f"No images found in {dir_path}")
-
-    logger.info("Found %d images in %s", len(image_files), dir_path)
-
-    for frame_id, img_path in enumerate(image_files, 1):
-        frame = cv2.imread(str(img_path))
-        if frame is None:
-            logger.warning("Skipping unreadable image: %s", img_path)
-            continue
-        yield frame_id, frame
 
 
 # ------------------------------------------------------------------

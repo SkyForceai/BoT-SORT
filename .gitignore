@@ -1,2 +1,5 @@
 *.pyc
+/.cursor/*
 */__pycache__
+/outputs/*
+*.pth

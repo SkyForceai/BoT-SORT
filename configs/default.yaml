@@ -1,0 +1,45 @@
+# BoT-SORT Runner Configuration
+# Copy this file and adjust values for your setup.
+
+data:
+  source_type: "video"           # "video" | "image_dir"
+  path: "/home/omer.taub/Desktop/original.MPG"
+
+detector:
+  type: "dfine"                  # extensible via detectors/ factory
+  backend: "pytorch"                # "onnx" | "trt" | "pytorch"
+  model_path: "/path/to/model.pth/.onnx/.engine" # path to object detection model (.pth , .onnx , .engine )
+  config_path: "detectors/dfine/configs/dfine_hgnetv2_l_custom.yml"   # YAML config (pytorch backend only)
+  target_size: [720, 1280]       # [H, W] letterbox canvas
+  num_classes: 5
+  conf_threshold: 0.3
+  num_top_queries: 300
+  device: "cuda:0"
+  fp16: false
+  use_ema: true                  # prefer EMA weights (pytorch backend)
+
+tracker:
+  track_high_thresh: 0.6
+  track_low_thresh: 0.1
+  new_track_thresh: 0.7
+  track_buffer: 30
+  match_thresh: 0.8
+  min_box_area: 10.0
+  proximity_thresh: 0.5
+  appearance_thresh: 0.25
+
+reid:
+  enabled: false
+  type: "fast_reid"
+  config_path: "reid/fast_reid/configs/MOT20/sbs_S50.yml"
+  weights_path: "reid/pretrained/mot20_sbs_S50.pth"
+  device: "cuda"
+
+registration: # not implemented yet
+  enabled: false
+
+output:
+  dir: "outputs"
+  experiment_name: "run"
+  save_video: true
+  video_fps: 30.0

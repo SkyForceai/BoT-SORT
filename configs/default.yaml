@@ -2,13 +2,19 @@
 # Copy this file and adjust values for your setup.
 
 data:
-  source_type: "video"           # "video" | "image_dir"
-  path: "/home/omer.taub/Desktop/original.MPG"
+  source_type: "image_dir"           # "video" | "image_dir"
+  # Fallback when `paths` is commented out: one split or a single sequence folder.
+  # path: "/home/omer.taub/Desktop/data/Visdrone-MOT/VisDrone2019-MOT-test-dev/sequences"
+  # All three VisDrone splits under Visdrone-MOT (when set, `path` above is ignored).
+  paths:
+    - "/home/omer.taub/Desktop/data/Visdrone-MOT/VisDrone2019-MOT-test-dev/sequences"
+    - "/home/omer.taub/Desktop/data/Visdrone-MOT/VisDrone2019-MOT-val/sequences"
+    - "/home/omer.taub/Desktop/data/Visdrone-MOT/VisDrone2019-MOT-train/sequences"
 
 detector:
   type: "dfine"                  # extensible via detectors/ factory
-  backend: "pytorch"                # "onnx" | "trt" | "pytorch"
-  model_path: "/path/to/model.pth/.onnx/.engine" # path to object detection model (.pth , .onnx , .engine )
+  backend: "trt"                # "onnx" | "trt" | "pytorch"
+  model_path: "/home/omer.taub/Desktop/ObjectDetectionResults/TESTfp16_full_5/best_stg2.engine" # path to object detection model (.pth , .onnx , .engine )
   config_path: "detectors/dfine/configs/dfine_hgnetv2_l_custom.yml"   # YAML config (pytorch backend only)
   target_size: [720, 1280]       # [H, W] letterbox canvas
   num_classes: 5
@@ -19,13 +25,13 @@ detector:
   use_ema: true                  # prefer EMA weights (pytorch backend)
 
 tracker:
-  track_high_thresh: 0.6
-  track_low_thresh: 0.1
-  new_track_thresh: 0.7
-  track_buffer: 30
-  match_thresh: 0.8
-  min_box_area: 10.0
-  proximity_thresh: 0.5
+  track_high_thresh: 0.4
+  track_low_thresh: 0.3
+  new_track_thresh: 0.8
+  track_buffer: 90
+  match_thresh: 0.6 
+  min_box_axis: 4.0
+  proximity_thresh: 0.3 
   appearance_thresh: 0.25
 
 reid:
@@ -35,11 +41,70 @@ reid:
   weights_path: "reid/pretrained/mot20_sbs_S50.pth"
   device: "cuda"
 
-registration: # not implemented yet
-  enabled: false
+registration:
+  enabled: true
+  type: "sparseOptFlow"              # "sparseOptFlow" | "ecc" | "orb" | "sift" | "none"
+  downscale: 2
+  # ECC-specific
+  # num_iterations: 5000
+  # eps: 1.0e-6
+  # file-specific
+  # file_path: "path/to/GMC-seqname.txt"
 
 output:
   dir: "outputs"
-  experiment_name: "run"
+  experiment_name: "run_3"
   save_video: true
-  video_fps: 30.0
+
+evaluation:
+  enabled: true                      # run evaluation after tracking finishes
+  # Single GT file or directory of GT CSVs (auto-detected).
+  # Directory mode expects files named {seq_name}_gt.csv.
+  # List: one gt_csv folder per split (matches `data.paths` order).
+  gt_csv:
+    - "/home/omer.taub/Desktop/data/Visdrone-MOT/VisDrone2019-MOT-test-dev/gt_csv"
+    - "/home/omer.taub/Desktop/data/Visdrone-MOT/VisDrone2019-MOT-val/gt_csv"
+    - "/home/omer.taub/Desktop/data/Visdrone-MOT/VisDrone2019-MOT-train/gt_csv"
+  annotation_frames_path: ""         # Per-sequence: drop {seq_name}_annotated.txt next to GT CSVs (auto-discovered, no config needed).
+                                     # Or set to a directory of {seq_name}_annotated.txt files, or a single file for all sequences.
+                                     # Empty means assume the full observed frame span is annotated.
+  pred_csv: ""                       # leave empty to use the tracks.csv produced by the runner
+  parser_format: "mot_csv"
+  iou_threshold: 0.3
+  size_bins:
+    impossible - [0,6]:  [0, 6]
+    tiny - [6, 10]: [6, 10]
+    small - [10, 16]: [10, 16]
+    tiny+small - [6, 16]: [6, 16]
+    medium - [16, 32]: [16, 32]
+    large - [32, 96]: [32, 96]
+    extra-large - [96, 1e5]: [96, 1e5]
+    all - [0, 1e5]: [0, 1e5]
+
+  class_groups:
+    person: [0]
+    two-wheeled: [1]
+    vehicle: [2]
+    truck: [3]
+    bus: [4]
+
+  # Frame-level density bins: GT objects per frame.
+  # Each frame is binned by its GT count; metrics are aggregated per bin.
+  density_bins:
+    low: [0, 15]
+    medium: [15, 30]
+    high: [30, 1e5]
+
+  porr:
+    visibility_occluded_max: 0.75      # occluded when visible fraction <= this ( >= 25% occluded)
+    min_pre_visible_frames: 1        # clear frames with same tracker ID before occlusion
+
+  fps: 24.0                              # sequence/input frame rate (used by id_instability)
+  metrics: ["mota", "idf1", "hota", "coverage", "pd", "id_instability", "porr", "realtime_kpi"]
+  clearml: true  # send metrics/plots to the active ClearML task
+  # Extra per-slice scalars (PerClass/{metric}, etc.) for Scalars → Values CSV compare
+  clearml_slice_scalars: false
+  reporting:
+    formats: ["console", "json"]
+    output_dir: "eval_results"
+  output_dir: "outputs/run_3/eval"          # directory where the eval report is saved

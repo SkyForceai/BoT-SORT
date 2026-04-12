@@ -248,7 +248,6 @@ class BoTSORT(object):
 
         self.tracked_stracks = []  # type: list[STrack]
         self.lost_stracks = []  # type: list[STrack]
-        self.removed_stracks = []  # type: list[STrack]
         BaseTrack.clear_count()
 
         self.frame_id = 0
@@ -458,8 +457,7 @@ class BoTSORT(object):
         self.tracked_stracks = joint_stracks(self.tracked_stracks, refind_stracks)
         self.lost_stracks = sub_stracks(self.lost_stracks, self.tracked_stracks)
         self.lost_stracks.extend(lost_stracks)
-        self.lost_stracks = sub_stracks(self.lost_stracks, self.removed_stracks)
-        self.removed_stracks.extend(removed_stracks) # fix, otherwise it will grow indefinitely
+        self.lost_stracks = sub_stracks(self.lost_stracks, removed_stracks) # deleted removed_stracks extending 
         self.tracked_stracks, self.lost_stracks = remove_duplicate_stracks(self.tracked_stracks, self.lost_stracks)
 
         #  New Feature: Birth Logic: only output confirmed tracks when adaptive confirm is on 

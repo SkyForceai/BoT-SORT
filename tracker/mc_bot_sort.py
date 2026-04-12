@@ -28,6 +28,12 @@ class STrack(BaseTrack):
             self.update_features(feat)
         self.alpha = 0.9
 
+        # New Feature: Birth Logic: adaptive birth-confirmation evidence 
+        self.evidence_score = 0.0
+        self.obs_count = 0
+        self._prev_obs_xywh = None
+        self._pre_update_xywh = None
+
     def update_features(self, feat):
         feat /= np.linalg.norm(feat)
         self.curr_feat = feat
@@ -55,6 +61,48 @@ class STrack(BaseTrack):
         else:
             self.cls_hist.append([cls, score])
             self.cls = cls
+
+    # New Feature: Birth Logic: helper for motion-consistency evidence
+    @staticmethod
+    def _xywh_iou(a, b):
+        """IoU between two (cx, cy, w, h) boxes."""
+        a_half, b_half = a[2:] / 2, b[2:] / 2
+        tl = np.maximum(a[:2] - a_half, b[:2] - b_half)
+        br = np.minimum(a[:2] + a_half, b[:2] + b_half)
+        wh = np.maximum(br - tl, 0)
+        inter = wh[0] * wh[1]
+        union = a[2] * a[3] + b[2] * b[3] - inter
+        return inter / max(union, 1e-6)
+
+    # New Feature: Birth Logic: accumulate multi-frame confirmation evidence
+    def accumulate_evidence(self, det, w_det=1.0, w_motion=1.0, w_spatial=1.0):
+        """Accumulate one frame of birth-confirmation evidence.
+
+        Factors (all in [0, 1]):
+          det_score      -- detection confidence
+          motion_consist -- IoU between KF-predicted box and detection
+          spatial_stab   -- area-ratio between consecutive observations
+        """
+        det_xywh = self.tlwh_to_xywh(det.tlwh)
+
+        motion = (
+            self._xywh_iou(self._pre_update_xywh, det_xywh)
+            if self._pre_update_xywh is not None
+            else 0.0
+        )
+
+        if self._prev_obs_xywh is not None:
+            a_old = self._prev_obs_xywh[2] * self._prev_obs_xywh[3]
+            a_new = det_xywh[2] * det_xywh[3]
+            spatial = min(a_old, a_new) / max(a_old, a_new, 1e-6)
+        else:
+            spatial = 0.0
+
+        self.evidence_score += (
+            w_det * det.score + w_motion * motion + w_spatial * spatial
+        )
+        self.obs_count += 1
+        self._prev_obs_xywh = det_xywh.copy()
 
     def predict(self):
         mean_state = self.mean.copy()
@@ -112,6 +160,8 @@ class STrack(BaseTrack):
         :return:
         """
         self.frame_id = frame_id
+        #  New Feature: Birth Logic: snapshot predicted box before KF correction 
+        self._pre_update_xywh = self.xywh
 
         new_tlwh = new_track.tlwh
 
@@ -216,6 +266,15 @@ class BoTSORT(object):
         self.proximity_thresh = args.proximity_thresh
         self.appearance_thresh = args.appearance_thresh
 
+        #  New Feature: Birth Logic: adaptive birth-confirmation parameters
+        _c = getattr(args, 'confirmation', None) or {}
+        self._adaptive_confirm = _c.get('enabled', False)
+        self._evidence_thresh = _c.get('evidence_threshold', 3.0)
+        self._max_unconfirmed_age = _c.get('max_unconfirmed_age', 8)
+        self._w_det = _c.get('w_det_score', 1.0)
+        self._w_motion = _c.get('w_motion_consistency', 1.0)
+        self._w_spatial = _c.get('w_spatial_stability', 1.0)
+
     def update(self, output_results):
         self.frame_id += 1
         activated_starcks = []
@@ -276,6 +335,10 @@ class BoTSORT(object):
 
         # Predict the current location with KF
         STrack.multi_predict(strack_pool)
+        
+        # New Feature: Birth Logic: also predict unconfirmed tracks so evidence IoU is meaningful 
+        if self._adaptive_confirm and unconfirmed:
+            STrack.multi_predict(unconfirmed)
 
         # Associate with high score detection boxes
         ious_dists = matching.iou_distance(strack_pool, detections)
@@ -350,10 +413,21 @@ class BoTSORT(object):
         dists = matching.fuse_score(dists, detections)
         matches, u_unconfirmed, u_detection = matching.linear_assignment(dists, thresh=0.7)
         for itracked, idet in matches:
-            unconfirmed[itracked].update(detections[idet], self.frame_id)
-            activated_starcks.append(unconfirmed[itracked])
+            track = unconfirmed[itracked]
+            track.update(detections[idet], self.frame_id)
+            #  New Feature: Birth Logic: accumulate evidence; keep tentative until threshold 
+            if self._adaptive_confirm:
+                track.accumulate_evidence(
+                    detections[idet], self._w_det, self._w_motion, self._w_spatial,
+                )
+                if track.evidence_score < self._evidence_thresh:
+                    track.is_activated = False
+            activated_starcks.append(track)
         for it in u_unconfirmed:
             track = unconfirmed[it]
+            #  New Feature: Birth Logic: grace period — keep unmatched tentatives alive 
+            if self._adaptive_confirm and self.frame_id - track.start_frame < self._max_unconfirmed_age:
+                continue
             track.mark_removed()
             removed_stracks.append(track)
 
@@ -364,6 +438,12 @@ class BoTSORT(object):
                 continue
 
             track.activate(self.kalman_filter, self.frame_id)
+            # New Feature: Birth Logic: seed evidence for brand-new track; start tentative
+            if self._adaptive_confirm:
+                track.accumulate_evidence(
+                    track, self._w_det, self._w_motion, self._w_spatial,
+                )
+                track.is_activated = False
             activated_starcks.append(track)
 
         """ Step 5: Update state"""
@@ -382,9 +462,11 @@ class BoTSORT(object):
         self.removed_stracks.extend(removed_stracks) # fix, otherwise it will grow indefinitely
         self.tracked_stracks, self.lost_stracks = remove_duplicate_stracks(self.tracked_stracks, self.lost_stracks)
 
-        # output_stracks = [track for track in self.tracked_stracks if track.is_activated]
-        output_stracks = [track for track in self.tracked_stracks]
-
+        #  New Feature: Birth Logic: only output confirmed tracks when adaptive confirm is on 
+        if self._adaptive_confirm:
+            output_stracks = [t for t in self.tracked_stracks if t.is_activated]
+        else:
+            output_stracks = [t for t in self.tracked_stracks]
 
         return output_stracks
 

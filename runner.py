@@ -83,6 +83,9 @@ def make_tracker_args(tracker_cfg: Dict, reid_enabled: bool) -> types.SimpleName
         proximity_thresh=tracker_cfg.get("proximity_thresh", 0.5),
         appearance_thresh=tracker_cfg.get("appearance_thresh", 0.25),
         with_reid=reid_enabled,
+
+        #  New Feature: Birth Logic: forward confirmation config to BoTSORT 
+        confirmation=tracker_cfg.get("confirmation", {}),
     )
 
 

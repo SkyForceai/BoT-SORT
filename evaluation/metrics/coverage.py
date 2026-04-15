@@ -27,8 +27,8 @@ class TrackCoverage:
     """Track Coverage metric compatible with the TrackEval eval interface.
 
     Accepts the same ``data`` dict produced by
-    :func:`~evaluation.adapter.build_trackeval_data` and used by
-    TrackEval's CLEAR / Identity / HOTA metrics.
+    :func:`~evaluation.adapter.build_trackeval_data_from_frame_results`
+    and used by TrackEval's CLEAR / Identity / HOTA metrics.
     """
 
     def __init__(self, config: dict | None = None):

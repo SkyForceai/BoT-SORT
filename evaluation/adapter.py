@@ -6,6 +6,14 @@ and precomputed similarity scores.  This module handles that conversion
 from our :class:`~evaluation.schema.SequenceData` types, including IoU
 computation **without** the PASCAL VOC -1 pixel adjustment to match
 TrackEval's convention exactly.
+
+Ignored-region handling
+~~~~~~~~~~~~~~~~~~~~~~~
+GT detections with ``score <= 0`` are treated as "don't-care" zones.
+They do not participate in Hungarian matching and never count as TP or FN.
+After matching, unmatched predictions whose IoA (intersection over
+prediction area) with any ignored GT exceeds :data:`IGNORED_IOA_THRESH`
+are silently removed so they are not penalised as false positives.
 """
 
 from __future__ import annotations
@@ -18,10 +26,18 @@ from scipy.optimize import linear_sum_assignment
 
 from evaluation.schema import (
     AnnotationMask,
+    Detection,
     FrameResult,
     MatchedPair,
     SequenceData,
 )
+
+IGNORED_IOA_THRESH: float = 0.5
+"""IoA threshold for suppressing FPs that overlap ignored GT regions.
+
+Matches the VisDrone devkit convention: a prediction is neutralised when
+more than 50 % of its area falls inside an ignored bounding box.
+"""
 
 
 def compute_ious_xyxy(boxes_a: np.ndarray, boxes_b: np.ndarray) -> np.ndarray:
@@ -52,102 +68,56 @@ def compute_ious_xyxy(boxes_a: np.ndarray, boxes_b: np.ndarray) -> np.ndarray:
     return np.where(union > 0, intersection / union, 0.0)
 
 
-def build_trackeval_data(
-    gt: SequenceData,
-    preds: SequenceData,
-    annotation_mask: AnnotationMask,
-) -> dict:
-    """Convert parsed sequence data to TrackEval's expected data dict.
+def _compute_ioa(
+    pred_boxes: np.ndarray,
+    ign_boxes: np.ndarray,
+) -> np.ndarray:
+    """Intersection-over-area-of-prediction between two box sets.
 
-    The returned dict has the format expected by
-    ``HOTA.eval_sequence``, ``CLEAR.eval_sequence``,
-    and ``Identity.eval_sequence``:
+    Parameters
+    ----------
+    pred_boxes : (N, 4) ``x1 y1 x2 y2``
+    ign_boxes  : (M, 4) ``x1 y1 x2 y2``
 
-    - ``gt_ids``, ``tracker_ids``: lists of 1-D int arrays
-      (contiguous 0-based IDs, used as matrix indices by TrackEval)
-    - ``similarity_scores``: list of 2-D float arrays (IoU matrices)
-    - ``num_timesteps``, ``num_gt_ids``, ``num_tracker_ids``
-    - ``num_gt_dets``, ``num_tracker_dets``
+    Returns
+    -------
+    (N, M) matrix where ``[i, j] = intersection(pred_i, ign_j) / area(pred_i)``.
     """
-    annotated = sorted(annotation_mask.resolve_frame_ids(gt, preds))
-    num_timesteps = len(annotated)
+    x1 = np.maximum(pred_boxes[:, 0:1], ign_boxes[:, 0:1].T)
+    y1 = np.maximum(pred_boxes[:, 1:2], ign_boxes[:, 1:2].T)
+    x2 = np.minimum(pred_boxes[:, 2:3], ign_boxes[:, 2:3].T)
+    y2 = np.minimum(pred_boxes[:, 3:4], ign_boxes[:, 3:4].T)
 
-    gt_ids_list: List[np.ndarray] = []
-    tracker_ids_list: List[np.ndarray] = []
-    similarity_list: List[np.ndarray] = []
+    intersection = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
 
-    unique_gt_ids: set = set()
-    unique_tracker_ids: set = set()
-    total_gt_dets = 0
-    total_tracker_dets = 0
+    pred_area = (
+        (pred_boxes[:, 2] - pred_boxes[:, 0])
+        * (pred_boxes[:, 3] - pred_boxes[:, 1])
+    )
+    return np.where(pred_area[:, None] > 0, intersection / pred_area[:, None], 0.0)
 
-    for fid in annotated:
-        gt_frame = gt.frames.get(fid)
-        pred_frame = preds.frames.get(fid)
 
-        gt_dets = gt_frame.detections if gt_frame else []
-        pred_dets = pred_frame.detections if pred_frame else []
+def _suppress_ignored(
+    unmatched_preds: List[Detection],
+    ignored_gt: List[Detection],
+) -> List[Detection]:
+    """Remove predictions that overlap sufficiently with ignored GT."""
+    if not unmatched_preds or not ignored_gt:
+        return unmatched_preds
 
-        gt_obj_ids = (
-            np.array([d.object_id for d in gt_dets], dtype=int)
-            if gt_dets
-            else np.empty(0, dtype=int)
-        )
-        pred_obj_ids = (
-            np.array([d.object_id for d in pred_dets], dtype=int)
-            if pred_dets
-            else np.empty(0, dtype=int)
-        )
+    pred_boxes = np.array(
+        [d.bbox_xyxy for d in unmatched_preds], dtype=np.float64,
+    )
+    ign_boxes = np.array(
+        [d.bbox_xyxy for d in ignored_gt], dtype=np.float64,
+    )
+    ioa = _compute_ioa(pred_boxes, ign_boxes)
+    max_ioa = ioa.max(axis=1)
 
-        unique_gt_ids.update(gt_obj_ids.tolist())
-        unique_tracker_ids.update(pred_obj_ids.tolist())
-        total_gt_dets += len(gt_dets)
-        total_tracker_dets += len(pred_dets)
-
-        if len(gt_dets) > 0 and len(pred_dets) > 0:
-            gt_boxes = np.array(
-                [d.bbox_xyxy for d in gt_dets], dtype=np.float64,
-            )
-            pred_boxes = np.array(
-                [d.bbox_xyxy for d in pred_dets], dtype=np.float64,
-            )
-            sim = compute_ious_xyxy(gt_boxes, pred_boxes)
-        else:
-            sim = np.zeros(
-                (len(gt_dets), len(pred_dets)), dtype=np.float64,
-            )
-
-        gt_ids_list.append(gt_obj_ids)
-        tracker_ids_list.append(pred_obj_ids)
-        similarity_list.append(sim)
-
-    # Remap IDs to contiguous 0-based integers (TrackEval uses them
-    # as array indices in potential_matches_count matrices).
-    sorted_gt = sorted(unique_gt_ids)
-    sorted_tr = sorted(unique_tracker_ids)
-    gt_map = {orig: new for new, orig in enumerate(sorted_gt)}
-    tr_map = {orig: new for new, orig in enumerate(sorted_tr)}
-
-    for t in range(num_timesteps):
-        if len(gt_ids_list[t]) > 0:
-            gt_ids_list[t] = np.array(
-                [gt_map[int(x)] for x in gt_ids_list[t]], dtype=int,
-            )
-        if len(tracker_ids_list[t]) > 0:
-            tracker_ids_list[t] = np.array(
-                [tr_map[int(x)] for x in tracker_ids_list[t]], dtype=int,
-            )
-
-    return {
-        "num_timesteps": num_timesteps,
-        "num_gt_ids": len(sorted_gt),
-        "num_tracker_ids": len(sorted_tr),
-        "num_gt_dets": total_gt_dets,
-        "num_tracker_dets": total_tracker_dets,
-        "gt_ids": gt_ids_list,
-        "tracker_ids": tracker_ids_list,
-        "similarity_scores": similarity_list,
-    }
+    return [
+        p for p, m in zip(unmatched_preds, max_ioa)
+        if m < IGNORED_IOA_THRESH
+    ]
 
 
 # ------------------------------------------------------------------
@@ -166,6 +136,12 @@ def global_match_sequence(
     metric: Hungarian assignment maximising ``1000 * continuity + IoU``
     with an IoU threshold gate.
 
+    **Ignored-region handling:**  GT detections with ``score <= 0`` are
+    excluded from Hungarian matching and never appear in ``matched`` or
+    ``unmatched_gt``.  After matching, unmatched predictions whose IoA
+    with any ignored GT exceeds :data:`IGNORED_IOA_THRESH` are removed
+    from ``unmatched_pred`` (they are not penalised as false positives).
+
     Returns one :class:`FrameResult` per annotated frame, containing
     matched pairs, unmatched GT, and unmatched predictions.  These
     results are then sliced by size bin before being fed to TrackEval
@@ -173,12 +149,14 @@ def global_match_sequence(
     """
     annotated = sorted(annotation_mask.resolve_frame_ids(gt, preds))
 
+    # Build continuity index only for *active* (evaluated) GT objects.
     all_gt_oids: set[int] = set()
     for fid in annotated:
         gt_frame = gt.frames.get(fid)
         if gt_frame:
             for d in gt_frame.detections:
-                all_gt_oids.add(d.object_id)
+                if not d.is_ignored:
+                    all_gt_oids.add(d.object_id)
 
     sorted_gt_oids = sorted(all_gt_oids)
     gt_oid_to_idx = {oid: idx for idx, oid in enumerate(sorted_gt_oids)}
@@ -192,17 +170,21 @@ def global_match_sequence(
         gt_frame = gt.frames.get(fid)
         pred_frame = preds.frames.get(fid)
 
-        gt_dets = list(gt_frame.detections) if gt_frame else []
+        all_gt_dets = list(gt_frame.detections) if gt_frame else []
         pred_dets = list(pred_frame.detections) if pred_frame else []
 
+        gt_dets = [d for d in all_gt_dets if not d.is_ignored]
+        ignored_gt = [d for d in all_gt_dets if d.is_ignored]
+
         if not gt_dets or not pred_dets:
+            unmatched_pred = _suppress_ignored(pred_dets, ignored_gt)
             results.append(FrameResult(
                 frame_id=fid,
                 gt_detections=gt_dets,
                 pred_detections=pred_dets,
                 matched=[],
                 unmatched_gt=list(gt_dets),
-                unmatched_pred=list(pred_dets),
+                unmatched_pred=unmatched_pred,
             ))
             continue
 
@@ -265,6 +247,8 @@ def global_match_sequence(
             if i not in matched_pred_idx
         ]
 
+        unmatched_pred = _suppress_ignored(unmatched_pred, ignored_gt)
+
         results.append(FrameResult(
             frame_id=fid,
             gt_detections=gt_dets,
@@ -288,8 +272,9 @@ def build_trackeval_data_from_frame_results(
     * **Tracker detections** = matched-pair predictions + unmatched predictions
     * **Similarity scores** = recomputed IoU matrix between the above
 
-    The returned dict has exactly the same schema as
-    :func:`build_trackeval_data`.
+    The returned dict has the schema expected by
+    ``HOTA.eval_sequence``, ``CLEAR.eval_sequence``,
+    and ``Identity.eval_sequence``.
     """
     gt_ids_list: List[np.ndarray] = []
     tracker_ids_list: List[np.ndarray] = []

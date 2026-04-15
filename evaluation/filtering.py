@@ -17,9 +17,10 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
 from evaluation.schema import (
+    IGNORED_CLASS_ID,
     Detection,
     FrameData,
     FrameResult,
@@ -166,6 +167,11 @@ def build_class_groups(cfg: Dict[str, List[int]]) -> List[ClassGroup]:
     return groups
 
 
+def _is_class_agnostic_ignored(det: Detection) -> bool:
+    """True for ignored regions that should survive any class filter."""
+    return det.is_ignored and det.class_id == IGNORED_CLASS_ID
+
+
 def filter_sequence_data(
     seq_data: SequenceData,
     class_group: ClassGroup,
@@ -176,6 +182,10 @@ def filter_sequence_data(
     Applied **before** passing to TrackEval so that metric computation
     only considers objects in the desired class/size slice.  Both GT
     and prediction sequences should be filtered the same way.
+
+    Class-agnostic ignored GT (``class_id == IGNORED_CLASS_ID``, ``score <= 0``)
+    always passes the class filter so it can suppress false positives for
+    any class group.
     """
     if not class_group.class_ids and size_bin.name == "all":
         return seq_data
@@ -185,7 +195,7 @@ def filter_sequence_data(
         filtered_dets = [
             d
             for d in frame.detections
-            if class_group.contains(d.class_id)
+            if (class_group.contains(d.class_id) or _is_class_agnostic_ignored(d))
             and size_bin.contains(d.min_side)
         ]
         filtered_frames[fid] = FrameData(
@@ -230,43 +240,6 @@ def build_eval_slices(
 
     slices.append(EvalSlice(ALL_CLASS_GROUP, ALL_BIN))
     return slices
-
-
-# ------------------------------------------------------------------
-# Filtering a FrameResult by class group
-# ------------------------------------------------------------------
-
-def filter_frame_result_by_class(
-    result: FrameResult,
-    class_group: ClassGroup,
-) -> FrameResult:
-    """Narrow *result* to objects whose class is in *class_group*.
-
-    - Matched pairs are kept only if the **GT** object's class is in the group.
-    - Unmatched GT entries are kept only if their class is in the group.
-    - Unmatched predictions are kept only if their class is in the group.
-    """
-    if not class_group.class_ids:
-        return result
-
-    filtered_matched = [
-        mp for mp in result.matched if class_group.contains(mp.gt.class_id)
-    ]
-    filtered_unmatched_gt = [
-        d for d in result.unmatched_gt if class_group.contains(d.class_id)
-    ]
-    filtered_unmatched_pred = [
-        d for d in result.unmatched_pred if class_group.contains(d.class_id)
-    ]
-
-    return FrameResult(
-        frame_id=result.frame_id,
-        gt_detections=result.gt_detections,
-        pred_detections=result.pred_detections,
-        matched=filtered_matched,
-        unmatched_gt=filtered_unmatched_gt,
-        unmatched_pred=filtered_unmatched_pred,
-    )
 
 
 # ------------------------------------------------------------------

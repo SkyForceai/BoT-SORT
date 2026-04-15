@@ -19,7 +19,6 @@ from typing import Any, Dict, List
 import numpy as np
 
 from evaluation.adapter import (
-    build_trackeval_data,
     build_trackeval_data_from_frame_results,
     global_match_sequence,
 )
@@ -53,19 +52,22 @@ logger = logging.getLogger(__name__)
 def _compute_gt_median_sizes(
     gt: SequenceData,
 ) -> Dict[int, float]:
-    """Return ``{object_id: median_min_side}`` for every GT track.
+    """Return ``{object_id: median_min_side}`` for every *active* GT track.
 
     Each GT track's ``min_side`` is recorded in every frame it appears.
     The median is used as the track's representative size so it can be
     assigned to exactly one size bin (avoiding double-counting across
     overlapping bins).
+
+    Ignored GT detections (``score <= 0``) are excluded.
     """
     from collections import defaultdict
 
     track_sizes: dict[int, list[float]] = defaultdict(list)
     for frame in gt.frames.values():
         for det in frame.detections:
-            track_sizes[det.object_id].append(det.min_side)
+            if not det.is_ignored:
+                track_sizes[det.object_id].append(det.min_side)
     return {
         oid: float(np.median(sizes))
         for oid, sizes in track_sizes.items()

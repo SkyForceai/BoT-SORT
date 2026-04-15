@@ -8,6 +8,13 @@ Optional trailing column::
 
     * 9 columns: ``occlusion`` — VisDrone-style level (0 none, 1 partial, 2 heavy).
 
+``score`` conventions for **ground truth**:
+
+* ``1.0`` — active annotation, used for TP/FP/FN counting.
+* ``0.0`` — ignored annotation (don't-care zone).  Predictions overlapping
+  an ignored GT box are not penalised as false positives.  Ignored GT never
+  counts towards false negatives.
+
 For **ground truth** only, ``occlusion`` is converted to ``Detection.visibility`` using
 :func:`evaluation.schema.visibility_from_visdrone_occlusion` so PORR can use visibility.
 Prediction CSVs keep ``visibility`` unset even if a 9th column is present.

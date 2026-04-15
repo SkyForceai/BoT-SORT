@@ -22,6 +22,14 @@ import numpy as np
 if TYPE_CHECKING:
     from evaluation.config import EvalConfig
 
+IGNORED_CLASS_ID: int = -1
+"""Sentinel class ID for class-agnostic ignored regions.
+
+GT detections with this class ID (and ``score <= 0``) represent spatial
+"don't-care" zones.  They survive class-group filtering and suppress
+false-positive penalties for predictions that overlap them.
+"""
+
 
 def visibility_from_visdrone_occlusion(occlusion: int) -> float:
     """Map VisDrone occlusion label to a visibility fraction for PORR and related metrics.
@@ -56,8 +64,11 @@ class Detection:
     Attributes:
         object_id: track_id for predictions, gt_id for ground truth.
         bbox_xyxy:  (4,) array in *x1 y1 x2 y2* format (absolute pixels).
-        score:      Confidence score.  Conventionally 1.0 for GT.
-        class_id:   Semantic class label.
+        score:      Confidence score.  Conventionally 1.0 for GT; 0.0 for
+            ignored annotations that should not be evaluated (predictions
+            overlapping ignored GT are not penalised as false positives).
+        class_id:   Semantic class label.  ``-1`` (:data:`IGNORED_CLASS_ID`)
+            marks a class-agnostic ignored region.
         visibility: Optional GT visibility in ``(0, 1]`` (fraction of bbox area visible).
             For GT loaded from MOT CSV with a VisDrone ``occlusion`` column, this is set
             via :func:`visibility_from_visdrone_occlusion`.  Otherwise set in code; ``None``
@@ -72,6 +83,11 @@ class Detection:
     class_id: int
     visibility: float | None = None
     occlusion: int | None = None
+
+    @cached_property
+    def is_ignored(self) -> bool:
+        """True when this GT detection should be excluded from TP/FN counts."""
+        return self.score <= 0
 
     def __hash__(self) -> int:
         return id(self)
@@ -102,18 +118,12 @@ class Detection:
 # Frame / sequence containers
 # ------------------------------------------------------------------
 
-EMPTY_DETECTIONS: List[Detection] = []
-
-
 @dataclass
 class FrameData:
     """All detections in a single frame."""
 
     frame_id: int
     detections: List[Detection] = field(default_factory=list)
-
-
-EMPTY_FRAME = FrameData(frame_id=-1, detections=[])
 
 
 @dataclass

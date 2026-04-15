@@ -8,6 +8,10 @@ from tracker.kalman_filter import KalmanFilter
 class STrack(BaseTrack):
     shared_kalman = KalmanFilter()
 
+    @classmethod
+    def init_shared_kalman(cls, kalman_cfg=None):
+        cls.shared_kalman = KalmanFilter(kalman_cfg)
+
     def __init__(self, tlwh, score, cls, feat=None):
 
         # wait activate
@@ -139,7 +143,8 @@ class STrack(BaseTrack):
 
     def re_activate(self, new_track, frame_id, new_id=False):
 
-        self.mean, self.covariance = self.kalman_filter.update(self.mean, self.covariance, self.tlwh_to_xywh(new_track.tlwh))
+        # New Feature: Adaptive Uncertainty: pass det_score to KF update
+        self.mean, self.covariance = self.kalman_filter.update(self.mean, self.covariance, self.tlwh_to_xywh(new_track.tlwh), det_score=new_track.score)
         if new_track.curr_feat is not None:
             self.update_features(new_track.curr_feat)
         self.state = TrackState.Tracked
@@ -165,7 +170,8 @@ class STrack(BaseTrack):
 
         new_tlwh = new_track.tlwh
 
-        self.mean, self.covariance = self.kalman_filter.update(self.mean, self.covariance, self.tlwh_to_xywh(new_tlwh))
+        # New Feature: Adaptive Uncertainty: pass det_score to KF update
+        self.mean, self.covariance = self.kalman_filter.update(self.mean, self.covariance, self.tlwh_to_xywh(new_tlwh), det_score=new_track.score)
 
         if new_track.curr_feat is not None:
             self.update_features(new_track.curr_feat)
@@ -259,7 +265,9 @@ class BoTSORT(object):
 
         self.buffer_size = args.track_buffer
         self.max_time_lost = self.buffer_size
-        self.kalman_filter = KalmanFilter()
+        _kf_cfg = getattr(args, 'kalman_filter', None) or {}
+        STrack.init_shared_kalman(_kf_cfg)
+        self.kalman_filter = KalmanFilter(_kf_cfg)
 
         # ReID module
         self.proximity_thresh = args.proximity_thresh

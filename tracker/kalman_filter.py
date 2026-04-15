@@ -37,8 +37,8 @@ class KalmanFilter(object):
 
     """
 
-    def __init__(self):
-        ndim, dt = 4, 1.
+    def __init__(self, kalman_cfg=None): # New Feature: adaptive Kalman uncertainty + parameters at config file
+        ndim, dt = 4, 1. # fix dt to 1. for now - for real time tracking applications, dt should be set to the time step of the video TODO
 
         # Create Kalman filter model matrices.
         self._motion_mat = np.eye(2 * ndim, 2 * ndim)
@@ -46,11 +46,34 @@ class KalmanFilter(object):
             self._motion_mat[i, ndim + i] = dt
         self._update_mat = np.eye(ndim, 2 * ndim)
 
+        c = kalman_cfg or {} # New Feature: adaptive Kalman uncertainty + parameters at config file
+
         # Motion and observation uncertainty are chosen relative to the current
         # state estimate. These weights control the amount of uncertainty in
         # the model. This is a bit hacky.
-        self._std_weight_position = 1. / 20
-        self._std_weight_velocity = 1. / 160
+        # parameters at config file
+        self._std_weight_position = float(c.get('std_weight_position', 1. / 20))
+        self._std_weight_velocity = float(c.get('std_weight_velocity', 1. / 160))
+
+        #  New Feature: Adaptive Uncertainty: score-dependent measurement noise bounds  - Vanilla Kalman Filter when min_score_measurement_scale and max_score_measurement_scale are set to 1.0
+        self._min_score_measurement_scale = float(c.get('min_score_measurement_scale', 0.5))
+        self._max_score_measurement_scale = float(c.get('max_score_measurement_scale', 2.0))
+
+    #  New Feature: Adaptive Uncertainty: scale measurement noise by detection confidence 
+    def _measurement_noise_scale(self, det_score):
+        """Return a multiplier for the measurement noise covariance.
+
+        High det_score → lower scale (trust measurement more).
+        Low  det_score → higher scale (trust prediction more).
+        """
+        if det_score is None or not np.isfinite(det_score):
+            return 1.0
+
+        det_score = float(np.clip(det_score, 0.0, 1.0))
+        return self._max_score_measurement_scale - (
+            self._max_score_measurement_scale - self._min_score_measurement_scale
+        ) * det_score
+
 
     def initiate(self, measurement):
         """Create track from unassociated measurement.
@@ -122,7 +145,7 @@ class KalmanFilter(object):
 
         return mean, covariance
 
-    def project(self, mean, covariance):
+    def project(self, mean, covariance, det_score=None):  # New Feature: Adaptive Uncertainty(det_score)
         """Project state distribution to measurement space.
 
         Parameters
@@ -145,6 +168,9 @@ class KalmanFilter(object):
             self._std_weight_position * mean[2],
             self._std_weight_position * mean[3]]
         innovation_cov = np.diag(np.square(std))
+        # New Feature: Adaptive Uncertainty: inflate/deflate R based on det_score
+        innovation_cov *= self._measurement_noise_scale(det_score)
+
 
         mean = np.dot(self._update_mat, mean)
         covariance = np.linalg.multi_dot((
@@ -190,7 +216,7 @@ class KalmanFilter(object):
 
         return mean, covariance
 
-    def update(self, mean, covariance, measurement):
+    def update(self, mean, covariance, measurement, det_score=None):  # New Feature: Adaptive Uncertainty(det_score)
         """Run Kalman filter correction step.
 
         Parameters
@@ -210,7 +236,8 @@ class KalmanFilter(object):
             Returns the measurement-corrected state distribution.
 
         """
-        projected_mean, projected_cov = self.project(mean, covariance)
+        # New Feature: Adaptive Uncertainty: forward det_score to project()
+        projected_mean, projected_cov = self.project(mean, covariance, det_score)
 
         chol_factor, lower = scipy.linalg.cho_factor(
             projected_cov, lower=True, check_finite=False)

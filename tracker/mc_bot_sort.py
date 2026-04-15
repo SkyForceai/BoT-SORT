@@ -273,6 +273,11 @@ class BoTSORT(object):
         self.proximity_thresh = args.proximity_thresh
         self.appearance_thresh = args.appearance_thresh
 
+        # Configurable association thresholds (backward-compatible defaults)
+        self.second_match_thresh = getattr(args, 'second_match_thresh', 0.5)
+        self.unconfirmed_match_thresh = getattr(args, 'unconfirmed_match_thresh', 0.7)
+        self.duplicate_iou_thresh = getattr(args, 'duplicate_iou_thresh', 0.15)
+
         #  New Feature: Birth Logic: adaptive birth-confirmation parameters
         _c = getattr(args, 'confirmation', None) or {}
         self._adaptive_confirm = _c.get('enabled', False)
@@ -362,6 +367,8 @@ class BoTSORT(object):
         else:
             dists = ious_dists
 
+        matching.gate_class(dists, strack_pool, detections) # New Feature: Gate Class: set cost to inf for pairs whose classes differ.
+        # matching.gate_cost_matrix(self.kalman_filter, dists, strack_pool, detections) # disabled
         matches, u_track, u_detection = matching.linear_assignment(dists, thresh=self.args.match_thresh)
 
         for itracked, idet in matches:
@@ -397,7 +404,8 @@ class BoTSORT(object):
 
         r_tracked_stracks = [strack_pool[i] for i in u_track if strack_pool[i].state == TrackState.Tracked]
         dists = matching.iou_distance(r_tracked_stracks, detections_second)
-        matches, u_track, u_detection_second = matching.linear_assignment(dists, thresh=0.5)
+        matching.gate_class(dists, r_tracked_stracks, detections_second) # New Feature: Gate Class: set cost to inf for pairs whose classes differ.
+        matches, u_track, u_detection_second = matching.linear_assignment(dists, thresh=self.second_match_thresh)
         for itracked, idet in matches:
             track = r_tracked_stracks[itracked]
             det = detections_second[idet]
@@ -418,7 +426,8 @@ class BoTSORT(object):
         detections = [detections[i] for i in u_detection]
         dists = matching.iou_distance(unconfirmed, detections)
         dists = matching.fuse_score(dists, detections)
-        matches, u_unconfirmed, u_detection = matching.linear_assignment(dists, thresh=0.7)
+        matching.gate_class(dists, unconfirmed, detections) # New Feature: Gate Class: set cost to inf for pairs whose classes differ.
+        matches, u_unconfirmed, u_detection = matching.linear_assignment(dists, thresh=self.unconfirmed_match_thresh)
         for itracked, idet in matches:
             track = unconfirmed[itracked]
             track.update(detections[idet], self.frame_id)
@@ -466,7 +475,7 @@ class BoTSORT(object):
         self.lost_stracks = sub_stracks(self.lost_stracks, self.tracked_stracks)
         self.lost_stracks.extend(lost_stracks)
         self.lost_stracks = sub_stracks(self.lost_stracks, removed_stracks) # deleted removed_stracks extending 
-        self.tracked_stracks, self.lost_stracks = remove_duplicate_stracks(self.tracked_stracks, self.lost_stracks)
+        self.tracked_stracks, self.lost_stracks = remove_duplicate_stracks(self.tracked_stracks, self.lost_stracks, self.duplicate_iou_thresh)
 
         #  New Feature: Birth Logic: only output confirmed tracks when adaptive confirm is on 
         if self._adaptive_confirm:
@@ -502,9 +511,9 @@ def sub_stracks(tlista, tlistb):
     return list(stracks.values())
 
 
-def remove_duplicate_stracks(stracksa, stracksb):
+def remove_duplicate_stracks(stracksa, stracksb, iou_thresh=0.15):
     pdist = matching.iou_distance(stracksa, stracksb)
-    pairs = np.where(pdist < 0.15)
+    pairs = np.where(pdist < iou_thresh)
     dupa, dupb = list(), list()
     for p, q in zip(*pairs):
         timep = stracksa[p].frame_id - stracksa[p].start_frame

@@ -111,6 +111,17 @@ def iou_distance(atracks, btracks):
     return cost_matrix
 
 
+# New Feature: Gate Class: set cost to inf for pairs whose classes differ.
+def gate_class(cost_matrix, atracks, btracks):
+    """Set cost to inf for pairs whose classes differ."""
+    if cost_matrix.size == 0:
+        return cost_matrix
+    a_cls = np.array([t.cls for t in atracks])
+    b_cls = np.array([d.cls for d in btracks])
+    cost_matrix[a_cls[:, None] != b_cls[None, :]] = np.inf
+    return cost_matrix
+
+
 def v_iou_distance(atracks, btracks):
     """
     Compute cost based on IoU

@@ -10,6 +10,7 @@ data:
     - "/home/omer.taub/Desktop/data/Visdrone-MOT/VisDrone2019-MOT-test-dev/sequences"
     # - "/home/omer.taub/Desktop/data/Visdrone-MOT/VisDrone2019-MOT-val/sequences"
     # - "/home/omer.taub/Desktop/data/Visdrone-MOT/VisDrone2019-MOT-train/sequences"
+    # - "/home/omer.taub/Desktop/original.MPG"
 
 detector:
   type: "dfine"                  # extensible via detectors/ factory
@@ -18,30 +19,46 @@ detector:
   config_path: "detectors/dfine/configs/dfine_hgnetv2_l_custom.yml"   # YAML config (pytorch backend only)
   target_size: [720, 1280]       # [H, W] letterbox canvas
   num_classes: 5
-  conf_threshold: 0.4
+  conf_threshold: 0.1
   num_top_queries: 300
   device: "cuda:0"
   fp16: false
   use_ema: true                  # prefer EMA weights (pytorch backend)
 
 tracker:
-  track_high_thresh: 0.5
-  track_low_thresh: 0.4
-  new_track_thresh: 0.8
-  track_buffer: 90
-  match_thresh: 0.81 
-  min_box_axis: 10.0
-  proximity_thresh: 0.3 
+  track_high_thresh: 0.6768
+  track_low_thresh: 0.2022
+  new_track_thresh: 0.7633
+  track_buffer: 220
+  match_thresh: 0.9182
+  second_match_thresh: 0.5470
+  unconfirmed_match_thresh: 0.7495
+  duplicate_iou_thresh: 0.2386
+  min_box_axis: 5.1037
   appearance_thresh: 0.25
+  proximity_thresh: 0.3
+
+  kalman_filter:
+    # Kalman Filter Parameters
+    std_weight_position: 0.03019         # 0.05 = 1/20 — process noise weight for position (x, y, w, h)
+    std_weight_velocity: 0.003149      # 0.00625 = 1/160 — process noise weight for velocity
+
+    # Lower values (e.g. 0.3): The filter snaps aggressively to high-confidence detections. This improves localization accuracy when the detector is reliable, but makes the tracker more sensitive to occasional detector jitter even at high scores.
+    # Higher values (e.g. 0.8–1.0): The filter still smooths even confident detections. More stable trajectories, but slower to react to genuine motion changes.
+    min_score_measurement_scale: 0.4781  # measurement noise multiplier at det_score=1 (low = trust detection)
+
+    # Higher values (e.g. 3.0–5.0): Low-confidence detections are nearly ignored — the tracker coasts on its predicted state. Good for suppressing noisy/spurious detections, but risks drifting if the detector is systematically low-confidence (e.g. occluded objects).
+    # Lower values (e.g. 1.0–1.5): Even weak detections pull the state estimate. This can help maintain accuracy during partial occlusions where detections exist but are low-confidence, at the cost of being more susceptible to false positives pulling tracks off course.
+    max_score_measurement_scale: 9.4372  # measurement noise multiplier at det_score=0 (high = trust prediction)
 
   #  New Feature: Birth Logic: multi-frame adaptive birth-confirmation settings 
   confirmation:
-    enabled: false                # false = vanilla 1-frame confirmation
-    evidence_threshold: 3.0       # cumulative score to confirm a track
-    max_unconfirmed_age: 8        # frames before unmatched tentative tracks are killed
-    w_det_score: 1.0              # weight for detection confidence
-    w_motion_consistency: 1.0     # weight for IoU(predicted, observed)
-    w_spatial_stability: 1.0      # weight for area-ratio stability
+    enabled: true                # false = vanilla 1-frame confirmation
+    evidence_threshold: 5.4164      # cumulative score to confirm a track
+    max_unconfirmed_age: 7        # frames before unmatched tentative tracks are killed
+    w_det_score: 1.8761          # weight for detection confidence
+    w_motion_consistency: 0.8567     # weight for IoU(predicted, observed)
+    w_spatial_stability: 1.8666  # weight for area-ratio stability
 
 reid:
   enabled: false
@@ -62,7 +79,7 @@ registration:
 
 output:
   dir: "outputs"
-  experiment_name: "run_6_no_confirmation"
+  experiment_name: "run_7"
   save_video: true
 
 evaluation:
@@ -72,8 +89,8 @@ evaluation:
   # List: one gt_csv folder per split (matches `data.paths` order).
   gt_csv:
     - "/home/omer.taub/Desktop/data/Visdrone-MOT/VisDrone2019-MOT-test-dev/gt_csv"
-    - "/home/omer.taub/Desktop/data/Visdrone-MOT/VisDrone2019-MOT-val/gt_csv"
-    - "/home/omer.taub/Desktop/data/Visdrone-MOT/VisDrone2019-MOT-train/gt_csv"
+    # - "/home/omer.taub/Desktop/data/Visdrone-MOT/VisDrone2019-MOT-val/gt_csv"
+    # - "/home/omer.taub/Desktop/data/Visdrone-MOT/VisDrone2019-MOT-train/gt_csv"
   annotation_frames_path: ""         # Per-sequence: drop {seq_name}_annotated.txt next to GT CSVs (auto-discovered, no config needed).
                                      # Or set to a directory of {seq_name}_annotated.txt files, or a single file for all sequences.
                                      # Empty means assume the full observed frame span is annotated.
@@ -116,4 +133,4 @@ evaluation:
   reporting:
     formats: ["console", "json"]
     output_dir: "eval_results"
-  output_dir: "outputs/run_6_no_confirmation/eval"          # directory where the eval report is saved
+  output_dir: "outputs/run_7/eval"          # directory where the eval report is saved

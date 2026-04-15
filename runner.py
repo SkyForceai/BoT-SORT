@@ -84,6 +84,10 @@ def make_tracker_args(tracker_cfg: Dict, reid_enabled: bool) -> types.SimpleName
         appearance_thresh=tracker_cfg.get("appearance_thresh", 0.25),
         with_reid=reid_enabled,
 
+        second_match_thresh=tracker_cfg.get("second_match_thresh", 0.5),
+        unconfirmed_match_thresh=tracker_cfg.get("unconfirmed_match_thresh", 0.7),
+        duplicate_iou_thresh=tracker_cfg.get("duplicate_iou_thresh", 0.15),
+
         kalman_filter=tracker_cfg.get("kalman_filter", {}),
 
         #  New Feature: Birth Logic: forward confirmation config to BoTSORT 
@@ -111,7 +115,7 @@ def _track_sequence(
     reid_enabled = reid_model is not None
     min_box_axis = config["tracker"].get("min_box_axis", 0.0)
     save_video = config["output"].get("save_video", False)
-    video_fps = config["output"].get("video_fps", 30.0)
+    video_fps = config["output"].get("video_fps", 24.0)
 
     recorder = RunRecorder(output_dir, save_video=save_video, video_fps=video_fps)
     registration = build_registration(config.get("registration", {}))
@@ -134,7 +138,8 @@ def _track_sequence(
         if registration is not None:
             dets_for_reg = detections[:, :4] if len(detections) > 0 else None
             warp = registration.apply(frame_bgr, dets_for_reg)
-            _apply_cmc(tracker.tracked_stracks, warp)
+
+            _apply_cmc(tracker.tracked_stracks + tracker.lost_stracks, warp)
 
         online_targets = tracker.update(detections)
 
